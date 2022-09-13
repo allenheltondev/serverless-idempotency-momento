@@ -1,0 +1,14 @@
+{
+  "name": "add-goat",
+  "version": "1.0.0",
+  "description": "Creates a new goat",
+  "main": "index.js",
+  "author": "allenheltondev",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.142.0",
+    "@aws-sdk/util-dynamodb": "^3.142.0",
+    "http-status-codes": "^2.2.0",
+    "ulid": "^2.3.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "finalize-order",
+  "version": "1.0.0",
+  "description": "Finalizes an idempotent placed order",
+  "main": "index.js",
+  "author": "allenheltondev",
+  "license": "MIT"
+}

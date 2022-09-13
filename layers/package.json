@@ -1,0 +1,17 @@
+{
+  "name": "shared-lambda-layer",
+  "version": "1.0.0",
+  "description": "Provides mechanisms for functions to share code",
+  "main": "index.js",
+  "author": "allenheltondev",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.165.0",
+    "@gomomento/sdk": "^0.15.0",
+    "http-status-codes": "^2.2.0",
+    "object-hash": "^3.0.0"
+  },
+  "files": [
+    "index.js"
+  ]
+}

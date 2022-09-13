@@ -1,0 +1,462 @@
+openapi: 3.0.0
+info:
+  title: Goat API
+  description: |
+    Add your goat products to the market or order some from your neighbors!
+  version: 1.0.0
+
+x-amazon-apigateway-request-validators:
+  Validate All:
+    validateRequestParameters: true
+    validateRequestBody: true
+x-amazon-apigateway-gateway-responses:
+  BAD_REQUEST_BODY:
+    statusCode: 400
+    responseTemplates:
+      application/json: '{ "message": "$context.error.validationErrorString" }'
+  INVALID_API_KEY:
+    statusCode: 401
+    responseTemplates:
+      application/json: '{ "message": "Unauthorized" }'
+
+paths:
+  /goats:
+    get:
+      summary: View a list of goats that contribute their goods to the cause
+      responses:
+        200:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoatList'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::Sub: ${GetGoatsRole.Arn}
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:dynamodb:action/Query
+        httpMethod: POST
+        type: aws
+        passthroughBehavior: 'never'
+        requestTemplates:
+          application/json:
+            Fn::Sub:
+              - |-
+                {
+                  "TableName": "${TableName}",
+                  "IndexName": "GSI1",
+                  "KeyConditionExpression": "#GSI1PK = :GSI1PK",
+                  "ExpressionAttributeNames": {
+                    "#GSI1PK": "GSI1PK"
+                  },
+                  "ExpressionAttributeValues": {
+                    ":GSI1PK": { "S": "goat#" }
+                  }
+                }
+              - { TableName: { Ref: TableName } }
+        responses:
+          200:
+            statusCode: 200
+            responseTemplates:
+              application/json: |
+                #set($context.responseOverride.header.Access-Control-Allow-Origin = '*')
+                #set($inputRoot = $input.path('$'))
+                {
+                  "items": [
+                    #foreach($elem in $inputRoot.Items) {
+                      "id": "$elem.pk.S",
+                      "name": "$elem.name.S",
+                      "owner": "$elem.owner.S"
+                    }#if($foreach.hasNext),#end
+                    #end
+                  ]
+                }
+    post:
+      parameters:
+        - $ref: '#/components/parameters/idempotency-key'
+      summary: Add a goat to the system for people to view
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Goat'
+      responses:
+        201:
+          $ref: '#/components/responses/Created'
+        202:
+          $ref: '#/components/responses/Accepted'
+        400:
+          $ref: '#/components/responses/BadRequest'        
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AddGoatFunction.Arn}/invocations
+        httpMethod: POST
+        type: aws_proxy
+  
+  /goats/{goatId}/catalog:
+    parameters:
+      - $ref: '#/components/parameters/goatId'
+    post:
+      summary: Add an item to a goat's product catalog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogItem'
+      responses:
+        201:
+          $ref: '#/components/responses/Created'
+        400:
+          $ref: '#/components/responses/BadRequest'
+        404:
+          $ref: '#/components/responses/NotFound'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::Sub: ${AddCatalogItemRole.Arn}
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:dynamodb:action/PutItem
+        httpMethod: POST
+        type: aws
+        passthroughBehavior: 'never'
+        requestTemplates:
+          application/json:
+            Fn::Sub:
+              - |-
+                #set($inputRoot = $input.path('$'))
+                {
+                  "TableName": "${TableName}",
+                  "Item": {
+                    "pk": { "S": "$input.params('goatId')"},
+                    "sk": { "S": "catalog#$input.path('$.name').toLowerCase()"},
+                    "name": { "S": "$input.path('$.name')" },
+                    "description": { "S": "$input.path('$.description')" },
+                    "price": { "N": "$input.path('$.price')" }
+                  },
+                  "ReturnValues": "NONE"
+                }
+              - { TableName: { Ref: TableName } }
+        responses:
+          200:
+            statusCode: 204
+            responseTemplates:
+              application/json: |
+                #set($context.responseOverride.header.Access-Control-Allow-Origin = '*')                
+    get:
+      summary: View a list of products in a goat's catalog
+      responses:
+        200:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogList'
+        404:
+          $ref: '#/components/responses/NotFound'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::Sub: ${GetCatalogItemsRole.Arn}
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:dynamodb:action/Query
+        httpMethod: POST
+        type: aws
+        passthroughBehavior: 'never'
+        requestTemplates:
+          application/json:
+            Fn::Sub:
+              - |-
+                {
+                  "TableName": "${TableName}",
+                  "KeyConditionExpression": "#pk = :pk",
+                  "ExpressionAttributeNames": {
+                    "#pk": "pk"
+                  },
+                  "ExpressionAttributeValues": {
+                    ":pk": { "S": "$input.params('goatId')" }
+                  }
+                }
+              - { TableName: { Ref: TableName } }
+        responses:
+          200:
+            statusCode: 200
+            responseTemplates:
+              application/json: |
+                #set($context.responseOverride.header.Access-Control-Allow-Origin = '*')
+                #set($inputRoot = $input.path('$'))
+                {
+                #if($inputRoot.Count == 0)
+                  #set($context.responseOverride.status = 404)
+                  "message": "A goat with the provided id could not be found"
+                #else
+                  "items": [
+                    #foreach($elem in $inputRoot.Items)
+                      #if("$elem.sk.S" != "goat#")
+                      {
+                        "name": "$elem.name.S",
+                        "description": "$elem.description.S",
+                        "price": $elem.price.N
+                      }#if($foreach.hasNext),#end
+                      #end                    
+                    #end
+                  ]
+                #end
+                }
+
+  /orders:
+    post:
+      parameters:
+        - $ref: '#/components/parameters/idempotency-key'
+      summary: Creates a new order for some sweet homemade goat products
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Order'
+      responses:
+        201:
+          $ref: '#/components/responses/Created'
+        202:
+          $ref: '#/components/responses/Accepted'
+        400:
+          $ref: '#/components/responses/BadRequest'        
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::Sub: ${AddOrderRole.Arn}
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:states:action/StartSyncExecution
+        httpMethod: POST
+        type: aws
+        requestTemplates:
+          application/json:
+            Fn::Sub:  
+              - |-
+                #set($context.responseOverride.header.Access-Control-Allow-Origin = '*')
+                #set($stateMachineInput = $input.path('$'))
+                #set($idempotencyKey = $input.params().header.get('idempotency-key'))
+                #if("$idempotencyKey" != "")
+                  #set($stateMachineInput.idempotencyKey = "$idempotencyKey")
+                #end
+                {
+                    "input": "$util.escapeJavaScript($input.json('$'))",
+                    "stateMachineArn": "${StateMachine}"
+                }
+              - { StateMachine: { "Ref": "AddOrderStateMachine" }}
+        responses:
+          200:
+            statusCode: 201
+            responseTemplates:
+              application/json: |
+                #set($context.responseOverride.header.Access-Control-Allow-Origin = '*')
+                #set($inputRoot = $input.path('$'))
+                #set($output = $util.parseJson($input.path('$.output')))
+                #set($context.responseOverride.status = $output.statusCode)
+                {
+                #if($output.statusCode != 201 && "$output.body" != "")
+                  "message": "$output.body.message"
+                #elseif ($output.statusCode != 201)
+                  "message": "$output.message"
+                #else
+                  "id": "$output.body.id"
+                #end
+                }
+
+          500:
+            statusCode: 500
+            responseTemplates:
+              application/json: |
+                #set($context.responseOverride.header.Access-Control-Allow-Origin = '*')
+                {
+                  "message": "Something went wrong."
+                }
+components:
+  parameters:
+    idempotency-key:
+      name: idempotency-key
+      in: header
+      description: Unique identifier for making an idempotent call
+      required: false
+      schema:
+        type: string
+    goatId:
+      name: goatId
+      in: path
+      description: Unique identifier for a goat
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    GoatList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - name
+              - owner              
+            properties:
+              id:
+                type: string
+              name: 
+                type: string
+              owner:
+                type: string
+    
+    Goat:
+      type: object
+      required:
+        - name
+        - owner
+        - breed
+      properties:
+        name:
+          type: string
+          minLength: 1
+        owner:
+          type: string
+          minLength: 1
+        breed:
+          type: string
+          enum: 
+            - Alpine
+            - LaMancha
+            - Nubian
+            - Boer
+            - Nigerian Dwarf
+            - Pygmy
+            - Sable
+
+    CatalogItem:
+      type: object
+      required:
+        - name
+        - price
+        - description
+      properties:
+        name: 
+          type: string
+          example: Goat Milk Soap
+        description:
+          type: string
+        price:
+          type: number
+
+    CatalogList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogItem'
+
+    Order:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: 
+              - goatId
+              - catalogItem
+              - quantity
+            properties:
+              goatId:
+                type: string
+              catalogItem:
+                type: string
+              quantity:
+                type: integer
+                minimum: 1
+
+  responses:    
+    Created:
+      description: Successfully added into the system
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - id
+            properties:
+              id:
+                type: string
+                description: The identifier for the new entity
+                example: igdLLki4no9ey1aN2rAB3s
+    BadRequest:
+      description: Unable to process request. Likely due to improperly formatted request.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+                description: Message detailing what went wrong
+                example: The 'name' field is required and is missing.
+    Accepted:
+      description: The request was accepted and is being worked in the background
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+                example: The request was accepted and is being processed.
+    NotFound:
+      description: Unable to find entity with a given identifier
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+                description: Message stating the entity was not found
+                example: Unable to find entity with the provided id
+    UnknownError:
+      description: An unexpected error occurred on the server.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+                description: Unknown error message
+                example: An unexpected error occurred.
+    NoContent:
+      description: A blank response is returned indicating success

@@ -1,0 +1,8 @@
+{
+  "name": "verify-order",
+  "version": "1.0.0",
+  "description": "Verifies if a placed order is a duplicate",
+  "main": "index.js",
+  "author": "allenheltondev",
+  "license": "MIT"
+}

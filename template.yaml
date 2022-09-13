@@ -1,0 +1,309 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Idempotency using Momento, a serverless caching solution
+
+Parameters:
+  TableName:
+    Type: String
+    Default: goat
+  GSI1:
+    Type: String
+    Default: GSI1  
+  Stage:
+    Type: String
+    Default: dev
+  MomentoAuthToken:
+    Type: String
+
+Globals:
+  Function:
+    Runtime: nodejs16.x
+    Architectures:
+      - arm64
+    Tracing: Active
+    MemorySize: 768
+    Timeout: 3
+    Handler: index.handler
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref TableName
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+        CACHE_TTL: 3600
+        CACHE_AUTH_TOKEN_SECRET: !Ref MomentoAuthSecret
+  Api:
+    Cors:
+      AllowMethods: "'DELETE,GET,POST,PUT,PATCH'"
+      AllowHeaders: "'Content-Type,Authorization'"
+      AllowOrigin: "'*'"
+
+Resources:
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: nodejs16.x
+      BuildArchitecture: arm64
+    Properties:
+      ContentUri: layers/
+      CompatibleRuntimes:
+        - nodejs16.x
+
+  GoatApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      TracingEnabled: false
+      StageName: !Ref Stage
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: ./openapi.yaml
+
+  GoatTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST      
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: !Ref GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+  
+  GetGoatsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole      
+      Policies:
+        - PolicyName: GetGoatsPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}/index/${GSI1}
+
+  AddGoatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/add-goat
+      Layers:
+        - !Ref SharedLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref MomentoAuthSecret
+            - Effect: Allow 
+              Action:
+                - dynamodb:PutItem
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+      Events:
+        AddGoatEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GoatApi
+            Path: /goats
+            Method: POST
+
+  MomentoAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: MomentoAuthSecret
+      Description: Secret for Momento Auth Token
+      SecretString:
+        Fn::Sub:
+          - |-
+            {
+              "auth_token": "${auth_token}"
+            }
+          - auth_token: !Ref MomentoAuthToken
+
+  AddCatalogItemRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole      
+      Policies:
+        - PolicyName: AddCatalogItemPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+
+  GetCatalogItemsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole      
+      Policies:
+        - PolicyName: GetCatalogItemsPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+
+  VerifyOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/verify-order
+      Layers:
+        - !Ref SharedLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref MomentoAuthSecret
+
+  FinalizeOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/finalize-order
+      Layers:
+        - !Ref SharedLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref MomentoAuthSecret
+
+  CalculateTotalFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/calculate-total
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  AddOrderStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: EXPRESS
+      DefinitionUri: workflows/add-order.asl.json
+      DefinitionSubstitutions:
+        DynamoDbPutItem: !Sub arn:${AWS::Partition}:states:::aws-sdk:dynamodb:putItem
+        DynamoDbGetItem: !Sub arn:${AWS::Partition}:states:::aws-sdk:dynamodb:getItem
+        LambdaInvoke: !Sub arn:${AWS::Partition}:states:::lambda:invoke
+        CalculateTotalFunction: !GetAtt CalculateTotalFunction.Arn
+        FinalizeOrderFunction: !GetAtt FinalizeOrderFunction.Arn
+        VerifyOrderFunction: !GetAtt VerifyOrderFunction.Arn
+        TableName: !Ref TableName
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+              Resource: 
+                - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+            - Effect: Allow
+              Action: 
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt CalculateTotalFunction.Arn
+                - !GetAtt FinalizeOrderFunction.Arn
+                - !GetAtt VerifyOrderFunction.Arn
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: "*"
+      Logging:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt AddOrderLogGroup.Arn
+  
+  AddOrderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 3
+
+  AddOrderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole      
+      Policies:
+        - PolicyName: AddOrderPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartSyncExecution
+                Resource: !Ref AddOrderStateMachine
+Outputs:
+  BaseUrl:
+    Description: Base url of the Goat Api
+    Value: !Sub https://${GoatApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}

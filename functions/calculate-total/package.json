@@ -1,0 +1,8 @@
+{
+  "name": "calculate-total",
+  "version": "1.0.0",
+  "description": "Determines total price for a catalog item based on quantity",
+  "main": "index.js",
+  "author": "allenheltondev",
+  "license": "MIT"
+}

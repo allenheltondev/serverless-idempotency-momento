@@ -1,0 +1,345 @@
+{
+  "Comment": "Adds an order for goat products",
+  "StartAt": "Is Idempotency Key Present?",
+  "States": {
+    "Is Idempotency Key Present?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.idempotencyKey",
+          "IsPresent": true,
+          "Next": "Verify Order Is Not Duplicate"
+        }
+      ],
+      "Default": "Validate Items in Order"
+    },
+    "Validate Items in Order": {
+      "Type": "Map",
+      "Iterator": {
+        "StartAt": "Get Catalog Item",
+        "States": {
+          "Get Catalog Item": {
+            "Type": "Task",
+            "Resource": "${DynamoDbGetItem}",
+            "Parameters": {
+              "TableName": "${TableName}",
+              "Key": {
+                "pk": {
+                  "S.$": "$.item.goatId"
+                },
+                "sk": {
+                  "S.$": "States.Format('catalog#{}', $.item.catalogItem)"
+                }
+              }
+            },
+            "ResultPath": "$.catalogItem",
+            "Next": "Does Item Exist?"
+          },
+          "Does Item Exist?": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.catalogItem.Item",
+                "IsPresent": true,
+                "Next": "Calculate Total Cost"
+              }
+            ],
+            "Default": "Mark Inventory Item Invalid"
+          },
+          "Calculate Total Cost": {
+            "Type": "Task",
+            "Resource": "${LambdaInvoke}",
+            "Parameters": {
+              "FunctionName": "${CalculateTotalFunction}",
+              "Payload": {
+                "price.$": "$.catalogItem.Item.price.N",
+                "quantity.$": "$.item.quantity"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "Format Item Output",
+            "ResultPath": "$.calculations"
+          },
+          "Format Item Output": {
+            "Type": "Pass",
+            "End": true,
+            "Parameters": {
+              "goatId.$": "$.item.goatId",
+              "catalogItem.$": "$.item.catalogItem",
+              "quantity.$": "$.item.quantity",
+              "totalCost.$": "$.calculations.Payload.total"
+            }
+          },
+          "Mark Inventory Item Invalid": {
+            "Type": "Pass",
+            "End": true,
+            "Parameters": {
+              "isValid": false
+            }
+          }
+        }
+      },
+      "ItemsPath": "$.items",
+      "Parameters": {
+        "item.$": "$$.Map.Item.Value"
+      },
+      "ResultPath": "$.summary",
+      "Next": "Initialize Order Variables"
+    },
+    "Initialize Order Variables": {
+      "Type": "Pass",
+      "Parameters": {
+        "index": 0,
+        "length.$": "States.ArrayLength($.summary)",
+        "orderTotal": 0
+      },
+      "ResultPath": "$.details",
+      "Next": "Set Current Item"
+    },
+    "Set Current Item": {
+      "Type": "Pass",
+      "Parameters": {
+        "item.$": "States.ArrayGetItem($.summary, $.details.index)"
+      },
+      "ResultPath": "$.details.current",
+      "Next": "Is Invalid Item?"
+    },
+    "Is Invalid Item?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.details.current.item.isValid",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.details.current.item.isValid",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "Return Order Is Invalid"
+        }
+      ],
+      "Default": "Add Item Cost To Order Total"
+    },
+    "Return Order Is Invalid": {
+      "Type": "Pass",
+      "Parameters": {
+        "statusCode": 400,
+        "body": {
+          "message": "One or more of the items in the order do not exist"
+        }
+      },
+      "Next": "Should Save Idempotent Result?"
+    },
+    "Add Item Cost To Order Total": {
+      "Type": "Pass",
+      "Parameters": {
+        "index.$": "States.MathAdd($.details.index, 1)",
+        "orderTotal.$": "States.MathAdd($.details.orderTotal, $.details.current.item.totalCost)",
+        "length.$": "States.ArrayLength($.summary)"
+      },
+      "ResultPath": "$.details",
+      "Next": "More to Process?"
+    },
+    "More to Process?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.details.index",
+          "NumericLessThanPath": "$.details.length",
+          "Next": "Set Current Item"
+        }
+      ],
+      "Default": "Generate Order Id"
+    },
+    "Generate Order Id": {
+      "Type": "Pass",
+      "Next": "Save Order",
+      "Parameters": {
+        "statusCode": 201,
+        "body": {
+          "id.$": "States.UUID()"
+        }
+      },
+      "ResultPath": "$.order"
+    },
+    "Save Order": {
+      "Type": "Task",
+      "Resource": "${DynamoDbPutItem}",
+      "Parameters": {
+        "TableName": "${TableName}",
+        "Item": {
+          "pk": {
+            "S.$": "$.order.body.id"
+          },
+          "sk": {
+            "S": "order#"
+          },
+          "total": {
+            "N.$": "States.Format('{}', $.details.orderTotal)"
+          },
+          "orderDate": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": null,
+      "OutputPath": "$.order",
+      "Next": "Should Save Idempotent Result?"
+    },
+    "Should Save Idempotent Result?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.idempotencyKey",
+              "IsPresent": true
+            },
+            {
+              "Not": {
+                "Variable": "$.body.id",
+                "IsPresent": true
+              }
+            }
+          ],
+          "Next": "Remove Idempotent Record For Failure"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.idempotencyKey",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.body.id",
+              "IsPresent": true
+            }
+          ],
+          "Next": "Save Successful Idempotency Result"
+        }
+      ],
+      "Default": "Success"
+    },
+    "Remove Idempotent Record For Failure": {
+      "Type": "Task",
+      "Resource": "${LambdaInvoke}",
+      "Parameters": {
+        "FunctionName": "${FinalizeOrderFunction}",
+        "Payload": {
+          "idempotencyKey.$": "$$.Execution.Input.idempotencyKey",
+          "statusCode": "400"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": null,
+      "Next": "Success"
+    },
+    "Success": {
+      "Type": "Succeed"
+    },
+    "Verify Order Is Not Duplicate": {
+      "Type": "Task",
+      "Resource": "${LambdaInvoke}",
+      "Parameters": {
+        "Payload.$": "$",
+        "FunctionName": "${VerifyOrderFunction}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.idempotency",
+      "Next": "Is New Order?"
+    },
+    "Is New Order?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.idempotency.Payload.isNewOrder",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.idempotency.Payload.isNewOrder",
+              "IsBoolean": true
+            },
+            {
+              "Variable": "$.idempotency.Payload.isNewOrder",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "Validate Items in Order"
+        }
+      ],
+      "Default": "Format Output With Idempotent Result"
+    },
+    "Format Output With Idempotent Result": {
+      "Type": "Pass",
+      "InputPath": "$.idempotency.Payload",
+      "Next": "Return Idempotent Result"
+    },
+    "Return Idempotent Result": {
+      "Type": "Succeed"
+    },
+    "Save Successful Idempotency Result": {
+      "Type": "Task",
+      "Resource": "${LambdaInvoke}",
+      "Parameters": {
+        "FunctionName": "${FinalizeOrderFunction}",
+        "Payload": {
+          "idempotencyKey.$": "$$.Execution.Input.idempotencyKey",
+          "statusCode": "201",
+          "result.$": "$.body"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": null,
+      "Next": "Success"
+    }
+  }
+}

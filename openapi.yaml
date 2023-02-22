@@ -111,8 +111,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CatalogItem'
       responses:
-        201:
-          $ref: '#/components/responses/Created'
+        204:
+          $ref: '#/components/responses/NoContent'
         400:
           $ref: '#/components/responses/BadRequest'
         404:

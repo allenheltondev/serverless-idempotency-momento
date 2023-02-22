@@ -22,7 +22,7 @@ Globals:
     Architectures:
       - arm64
     Tracing: Active
-    MemorySize: 768
+    MemorySize: 1024
     Timeout: 3
     Handler: index.handler
     Environment:
@@ -30,7 +30,7 @@ Globals:
         TABLE_NAME: !Ref TableName
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
         CACHE_TTL: 3600
-        CACHE_AUTH_TOKEN_SECRET: !Ref MomentoAuthSecret
+        MOMENTO_SECRET: !Ref MomentoAuthSecret
   Api:
     Cors:
       AllowMethods: "'DELETE,GET,POST,PUT,PATCH'"
@@ -41,12 +41,12 @@ Resources:
   SharedLayer:
     Type: AWS::Serverless::LayerVersion
     Metadata:
-      BuildMethod: nodejs16.x
+      BuildMethod: nodejs18.x
       BuildArchitecture: arm64
     Properties:
       ContentUri: layers/
       CompatibleRuntimes:
-        - nodejs16.x
+        - nodejs18.x
 
   GoatApi:
     Type: AWS::Serverless::Api

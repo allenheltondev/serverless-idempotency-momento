@@ -1,4 +1,4 @@
-const { SimpleCacheClient, EnvMomentoTokenProvider, Configurations, CacheGet } = require('@gomomento/sdk');
+const { SimpleCacheClient, EnvMomentoTokenProvider, Configurations, CacheGet, CacheSetIfNotExists } = require('@gomomento/sdk');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const hash = require('object-hash');
 
@@ -12,41 +12,53 @@ let cachedSecret;
 
 exports.validateCache = async (idempotencyKey, payload) => {
   const momento = await getCacheClient();
-  const cacheResponse = await momento.get(IDEMPOTENCY_CACHE, idempotencyKey);
+  let cacheResponse = await momento.get(IDEMPOTENCY_CACHE, idempotencyKey);
   if (cacheResponse instanceof CacheGet.Miss) {
     const cacheValue = {
       hash: hash(payload),
       inProgress: true
     };
 
-    await momento.set(IDEMPOTENCY_CACHE, idempotencyKey, JSON.stringify(cacheValue));
-  } else if (cacheResponse instanceof CacheGet.Hit){
-    const cacheValue = JSON.parse(cacheResponse.valueString());
-    const payloadHash = hash(payload);
-    if(payloadHash !== cacheValue.hash){
-      return {
-        statusCode: 400,
-        error: PAYLOAD_MISMATCH_ERROR
-      };
+    const setResponse = await momento.setIfNotExists(IDEMPOTENCY_CACHE, idempotencyKey, JSON.stringify(cacheValue));
+    if (setResponse instanceof CacheSetIfNotExists.NotStored) {
+      // This means there were two competing calls at approximately the same time. 
+      // Check the stored payload and process accordingly
+      cacheResponse = await momento.get(IDEMPOTENCY_CACHE, idempotencyKey);
+      const response = processIdempotentHit(payload, cacheResponse);
+      return response;
     }
-    
-    if(cacheValue.inProgress){
-      return {
-        statusCode: 202,
-        error: REQUEST_IN_PROGRESS_ERROR
-      };
-    }
+  } else if (cacheResponse instanceof CacheGet.Hit) {
+    const response = processIdempotentHit(payload, cacheResponse);
+    return response;
+  }
+};
 
+const processIdempotentHit = (payload, value) => {
+  const cacheValue = JSON.parse(value.valueString());
+  const payloadHash = hash(payload);
+  if (payloadHash !== cacheValue.hash) {
     return {
-      statusCode: cacheValue.statusCode,
-      body: cacheValue.result
-    }
+      statusCode: 400,
+      error: PAYLOAD_MISMATCH_ERROR
+    };
+  }
+
+  if (cacheValue.inProgress) {
+    return {
+      statusCode: 202,
+      error: REQUEST_IN_PROGRESS_ERROR
+    };
+  }
+
+  return {
+    statusCode: cacheValue.statusCode,
+    body: cacheValue.result
   }
 };
 
 exports.finalizeCache = async (idempotencyKey, statusCode, result) => {
   const momento = await getCacheClient();
-  if(statusCode >= 400) {
+  if (statusCode >= 400) {
     // If the request resulted in an error, do not save the response and allow the caller to attempt to fix it
     await momento.delete(IDEMPOTENCY_CACHE, idempotencyKey);
   } else {

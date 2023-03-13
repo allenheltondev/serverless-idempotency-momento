@@ -1,4 +1,4 @@
-const { SimpleCacheClient, EnvMomentoTokenProvider, Configurations, CacheGet, CacheSetIfNotExists } = require('@gomomento/sdk');
+const { CacheClient, EnvMomentoTokenProvider, Configurations, CacheGet, CacheSetIfNotExists } = require('@gomomento/sdk');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const hash = require('object-hash');
 
@@ -81,7 +81,7 @@ const getCacheClient = async (caches = [IDEMPOTENCY_CACHE]) => {
     process.env.AUTH_TOKEN = authToken;
     const credentials = new EnvMomentoTokenProvider({ environmentVariableName: 'AUTH_TOKEN' });
 
-    const cacheClient = new SimpleCacheClient({
+    const cacheClient = new CacheClient({
       configuration: Configurations.Laptop.latest(),
       credentialProvider: credentials,
       defaultTtlSeconds: Number(process.env.CACHE_TTL)
@@ -108,7 +108,7 @@ const initializeCaches = async (caches) => {
     const listCachesResponse = await momentoClient.listCaches();
     const cachesToAdd = caches.filter(c => !listCachesResponse.caches.some(cache => cache.name == c));
     for (const cacheToAdd of cachesToAdd) {
-      await momentoClient.createCache(cacheToAdd)
+      await momentoClient.createCache(cacheToAdd);
     }
   }
-}
+};
